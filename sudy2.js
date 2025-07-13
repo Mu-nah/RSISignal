@@ -1,5 +1,9 @@
+const express = require("express");
 const axios = require("axios");
 require("dotenv").config();
+
+const app = express();
+const PORT = process.env.PORT || 3000;
 
 const SYMBOLS = ["BTC/USD", "XAU/USD"];
 const RSI_LO = 48;
@@ -8,10 +12,9 @@ const API_KEYS = process.env.TD_API_KEYS.split(",").map(k => k.trim()).filter(k 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
+const lastSignal = {};
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const lastSignal = {}; // stores last signal direction per symbol
 
-// ── Telegram Alert ──────────────────────────────
 async function sendTelegram(text) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
   const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
@@ -26,7 +29,6 @@ async function sendTelegram(text) {
   }
 }
 
-// ── Fetch Candle Data ───────────────────────────
 async function fetchTD(symbol, interval, rows = 100) {
   for (const key of API_KEYS) {
     try {
@@ -48,7 +50,6 @@ async function fetchTD(symbol, interval, rows = 100) {
   return null;
 }
 
-// ── RSI Calculation ─────────────────────────────
 function rsi(closes, len = 14) {
   const rsis = Array(closes.length).fill(null);
   let gain = 0, loss = 0;
@@ -70,7 +71,6 @@ function rsi(closes, len = 14) {
   return rsis;
 }
 
-// ── Bollinger Bands ─────────────────────────────
 function bollinger(closes, w = 20, d = 2) {
   const mid = Array(closes.length).fill(null);
   const up = Array(closes.length).fill(null);
@@ -86,7 +86,6 @@ function bollinger(closes, w = 20, d = 2) {
   return { mid, up, lo };
 }
 
-// ── Generate Signal for 1 Symbol ────────────────
 async function getSignal(sym) {
   const df15 = await fetchTD(sym, "15min");
   const df1h = await fetchTD(sym, "1h");
@@ -146,8 +145,8 @@ async function getSignal(sym) {
   return { symbol: sym, time: now, direction, entry, tp, sl, strategy };
 }
 
-// ── Main Loop ───────────────────────────────────
-(async () => {
+// 🌀 Loop in background
+async function loopSignals() {
   while (true) {
     for (const sym of SYMBOLS) {
       try {
@@ -190,7 +189,17 @@ async function getSignal(sym) {
         console.error(`[Error] ${sym}:`, err.message);
       }
     }
-
-    await sleep(240000); // every 4 minutes
+    await sleep(240000); // 4 mins
   }
-})();
+}
+
+// ➕ Basic homepage route
+app.get("/", (req, res) => {
+  res.send("✅ Signal bot running");
+});
+
+// Start server and background loop
+app.listen(PORT, () => {
+  console.log(`🚀 Web service running on port ${PORT}`);
+  loopSignals(); // start background process
+});
