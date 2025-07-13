@@ -24,9 +24,7 @@ async function sendTelegram(text) {
       text,
       parse_mode: "Markdown"
     });
-  } catch (e) {
-    console.error("Telegram Error:", e.message);
-  }
+  } catch (e) {}
 }
 
 async function fetchTD(symbol, interval, rows = 100) {
@@ -110,7 +108,7 @@ async function getSignal(sym) {
     (r15 >= RSI_LO && r15 <= RSI_HI) ||
     (r1h >= RSI_LO && r1h <= RSI_HI)
   )
-    return { symbol: sym, time: now, direction: "wait", reason: "RSI neutral" };
+    return { symbol: sym, time: now, direction: "wait" };
 
   const trendBuy =
     c15.close > bb15.mid[i15] && c15.high < bb15.up[i15] &&
@@ -145,7 +143,6 @@ async function getSignal(sym) {
   return { symbol: sym, time: now, direction, entry, tp, sl, strategy };
 }
 
-// 🌀 Loop in background
 async function loopSignals() {
   while (true) {
     for (const sym of SYMBOLS) {
@@ -157,13 +154,8 @@ async function loopSignals() {
         if (sig.direction !== prev) {
           const watTime = new Date(sig.time).toLocaleString("en-NG", {
             timeZone: "Africa/Lagos",
-            weekday: "short",
-            day: "2-digit",
-            month: "short",
-            year: "numeric",
-            hour: "2-digit",
-            minute: "2-digit",
-            hour12: true
+            weekday: "short", day: "2-digit", month: "short", year: "numeric",
+            hour: "2-digit", minute: "2-digit", hour12: true
           });
 
           let msg = `📢 *${sig.symbol}* Signal`;
@@ -180,26 +172,18 @@ async function loopSignals() {
             msg += `\n🕒 ${watTime} (WAT)`;
           }
 
-          console.log(`[Alert] ${sig.symbol}: ${sig.direction}`);
           await sendTelegram(msg);
-        } else {
-          console.log(`[No Change] ${sym}: ${sig.direction}`);
         }
       } catch (err) {
-        console.error(`[Error] ${sym}:`, err.message);
+        // Silent error
       }
     }
-    await sleep(240000); // 4 mins
+    await sleep(240000); // every 4 minutes
   }
 }
 
-// ➕ Basic homepage route
-app.get("/", (req, res) => {
-  res.send("✅ Signal bot running");
-});
+app.get("/", (_, res) => res.send("✅ Signal bot running"));
 
-// Start server and background loop
 app.listen(PORT, () => {
-  console.log(`🚀 Web service running on port ${PORT}`);
-  loopSignals(); // start background process
+  loopSignals();
 });
