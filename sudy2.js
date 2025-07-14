@@ -5,9 +5,11 @@ require("dotenv").config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const SYMBOLS = ["BTC/USD", "XAU/USD"];
+// ✅ Only BTC/USD now
+const SYMBOLS = ["BTC/USD"];
 const RSI_LO = 48;
 const RSI_HI = 52;
+
 const API_KEYS = process.env.TD_API_KEYS.split(",").map(k => k.trim()).filter(k => k.length > 20);
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -118,26 +120,12 @@ async function getSignal(sym) {
     c15.close < bb15.mid[i15] && c15.low > bb15.lo[i15] &&
     c1h.close < c1h.open && c1h.high < bb1h.up[i1h] && c1h.low > bb1h.lo[i1h];
 
-  const reversalSell =
-    c15.close > bb15.mid[i15] && c15.low > bb15.mid[i15] &&
-    c15.high < bb15.up[i15] && c15.close < c15.open &&
-    c1h.close < c1h.open;
-
-  const reversalBuy =
-    c15.close < bb15.mid[i15] && c15.high < bb15.mid[i15] &&
-    c15.low > bb15.lo[i15] && c15.close > c15.open &&
-    c1h.close > c1h.open;
-
   let direction = "wait", tp = null, sl = null, strategy = null, entry = null;
 
   if (trendBuy) {
     direction = "buy"; entry = c15.close; tp = bb15.up[i15]; sl = c1h.open; strategy = "trend";
   } else if (trendSell) {
     direction = "sell"; entry = c15.close; tp = bb15.lo[i15]; sl = c1h.open; strategy = "trend";
-  } else if (reversalSell) {
-    direction = "sell"; entry = c15.close; tp = bb15.mid[i15]; sl = c1h.open; strategy = "reversal";
-  } else if (reversalBuy) {
-    direction = "buy"; entry = c15.close; tp = bb15.mid[i15]; sl = c1h.open; strategy = "reversal";
   }
 
   return { symbol: sym, time: now, direction, entry, tp, sl, strategy };
@@ -175,15 +163,12 @@ async function loopSignals() {
           await sendTelegram(msg);
         }
       } catch (err) {
-        // Silent error
+        // Silent fail
       }
     }
-    await sleep(120000); // every 2 minutes
+    await sleep(240000); // every 2 mins
   }
 }
 
-app.get("/", (_, res) => res.send("✅ Signal bot running"));
-
-app.listen(PORT, () => {
-  loopSignals();
-});
+app.get("/", (_, res) => res.send("✅ BTC Signal bot running"));
+app.listen(PORT, () => loopSignals());
