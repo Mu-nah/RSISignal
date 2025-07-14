@@ -178,7 +178,7 @@ async function loopSignals() {
         // Silent error
       }
     }
-    await sleep(240000); // every 4 minutes
+    await sleep(120000); // every 2 minutes
   }
 }
 
