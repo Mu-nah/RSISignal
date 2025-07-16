@@ -5,16 +5,15 @@ require("dotenv").config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ✅ Only BTC/USD now
 const SYMBOLS = ["BTC/USD"];
-const RSI_LO = 48;
-const RSI_HI = 52;
+const RSI_LO = 45;
+const RSI_HI = 55;
 
 const API_KEYS = process.env.TD_API_KEYS.split(",").map(k => k.trim()).filter(k => k.length > 20);
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-const lastSignal = {};
+const lastSignal = {}; // { "BTC/USD": { direction, time } }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function sendTelegram(text) {
@@ -87,48 +86,60 @@ function bollinger(closes, w = 20, d = 2) {
 }
 
 async function getSignal(sym) {
-  const df15 = await fetchTD(sym, "15min");
+  const df5 = await fetchTD(sym, "5min");
   const df1h = await fetchTD(sym, "1h");
-  if (!df15 || !df1h) return { symbol: sym, direction: "wait", reason: "no data" };
+  if (!df5 || !df1h) return { symbol: sym, direction: "wait", reason: "no data" };
 
-  const closes15 = df15.map(c => c.close);
+  const closes5 = df5.map(c => c.close);
   const closes1h = df1h.map(c => c.close);
-  const rsi15 = rsi(closes15);
+  const rsi5 = rsi(closes5);
   const rsi1h = rsi(closes1h);
-  const bb15 = bollinger(closes15);
+  const bb5 = bollinger(closes5);
   const bb1h = bollinger(closes1h);
 
-  const i15 = df15.length - 1;
+  const i5 = df5.length - 1;
   const i1h = df1h.length - 1;
-  const c15 = df15[i15];
+  const c5 = df5[i5];
   const c1h = df1h[i1h];
-  const r15 = rsi15[i15], r1h = rsi1h[i1h];
+  const r5 = rsi5[i5], r1h = rsi1h[i1h];
   const now = new Date().toISOString();
 
-  if (
-    r15 == null || r1h == null ||
-    (r15 >= RSI_LO && r15 <= RSI_HI) ||
-    (r1h >= RSI_LO && r1h <= RSI_HI)
-  )
-    return { symbol: sym, time: now, direction: "wait" };
+  // Strong RSI check
+  const rsiValid = (r5 < RSI_LO && r1h < RSI_LO) || (r5 > RSI_HI && r1h > RSI_HI);
+  if (!rsiValid) return { symbol: sym, time: now, direction: "wait", reason: "weak rsi" };
 
   const trendBuy =
-    c15.close > bb15.mid[i15] && c15.high < bb15.up[i15] &&
+    c5.close > bb5.mid[i5] && c5.high < bb5.up[i5] &&
     c1h.close > c1h.open && c1h.high < bb1h.up[i1h] && c1h.low > bb1h.lo[i1h];
 
   const trendSell =
-    c15.close < bb15.mid[i15] && c15.low > bb15.lo[i15] &&
+    c5.close < bb5.mid[i5] && c5.low > bb5.lo[i5] &&
     c1h.close < c1h.open && c1h.high < bb1h.up[i1h] && c1h.low > bb1h.lo[i1h];
 
   let direction = "wait", tp = null, sl = null, strategy = null, entry = null;
 
   if (trendBuy) {
-    direction = "buy"; entry = c15.close; tp = bb15.up[i15]; sl = c1h.open; strategy = "trend";
+    direction = "buy";
+    entry = c5.close;
+    tp = bb5.up[i5];
+    sl = c1h.open;
+    strategy = "trend";
+
+    // Already hit TP or SL
+    if (c5.high >= tp || c5.low <= sl)
+      return { symbol: sym, time: now, direction: "wait", reason: "already triggered" };
   } else if (trendSell) {
-    direction = "sell"; entry = c15.close; tp = bb15.lo[i15]; sl = c1h.open; strategy = "trend";
+    direction = "sell";
+    entry = c5.close;
+    tp = bb5.lo[i5];
+    sl = c1h.open;
+    strategy = "trend";
+
+    if (c5.low <= tp || c5.high >= sl)
+      return { symbol: sym, time: now, direction: "wait", reason: "already triggered" };
   }
 
-  return { symbol: sym, time: now, direction, entry, tp, sl, strategy };
+  return { symbol: sym, time: c5.time.toISOString(), direction, entry, tp, sl, strategy };
 }
 
 async function loopSignals() {
@@ -137,36 +148,34 @@ async function loopSignals() {
       try {
         const sig = await getSignal(sym);
         const prev = lastSignal[sym];
-        lastSignal[sym] = sig.direction;
 
-        if (sig.direction !== prev) {
-          const watTime = new Date(sig.time).toLocaleString("en-NG", {
-            timeZone: "Africa/Lagos",
-            weekday: "short", day: "2-digit", month: "short", year: "numeric",
-            hour: "2-digit", minute: "2-digit", hour12: true
-          });
+        // Check if signal direction or time changed
+        const isSame = prev && prev.direction === sig.direction && prev.time === sig.time;
+        if (sig.direction === "wait" || isSame) continue;
 
-          let msg = `📢 *${sig.symbol}* Signal`;
+        lastSignal[sym] = { direction: sig.direction, time: sig.time };
 
-          if (sig.direction === "wait") {
-            msg += `\n🕒 *${watTime} (WAT)*`;
-            msg += `\n⚠️ Direction changed to *WAIT*`;
-          } else {
-            const dirIcon = sig.direction === "buy" ? "🟩" : "🟥";
-            msg += ` (${sig.strategy?.toUpperCase() || "UNKNOWN"})\n`;
-            msg += `${dirIcon} Direction: *${sig.direction.toUpperCase()}*`;
-            msg += `\n💰 Entry: $${(sig.entry || 0).toFixed(2)}`;
-            msg += `\n🎯 TP: $${(sig.tp || 0).toFixed(2)}\n🛑 SL: $${(sig.sl || 0).toFixed(2)}`;
-            msg += `\n🕒 ${watTime} (WAT)`;
-          }
+        const watTime = new Date(sig.time).toLocaleString("en-NG", {
+          timeZone: "Africa/Lagos",
+          weekday: "short", day: "2-digit", month: "short", year: "numeric",
+          hour: "2-digit", minute: "2-digit", hour12: true
+        });
 
-          await sendTelegram(msg);
-        }
+        let msg = `📢 *${sig.symbol}* Signal`;
+        const dirIcon = sig.direction === "buy" ? "🟩" : "🟥";
+
+        msg += ` (${sig.strategy?.toUpperCase() || "UNKNOWN"})\n`;
+        msg += `${dirIcon} Direction: *${sig.direction.toUpperCase()}*`;
+        msg += `\n💰 Entry: $${(sig.entry || 0).toFixed(2)}`;
+        msg += `\n🎯 TP: $${(sig.tp || 0).toFixed(2)}\n🛑 SL: $${(sig.sl || 0).toFixed(2)}`;
+        msg += `\n🕒 ${watTime} (WAT)`;
+
+        await sendTelegram(msg);
       } catch (err) {
         // Silent fail
       }
     }
-    await sleep(240000); // every 2 mins
+    await sleep(240000); // every 4 mins
   }
 }
 
