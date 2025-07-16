@@ -16,6 +16,7 @@ const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 const lastSignal = {}; // { "BTC/USD": { direction, time } }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// ── Telegram Notification ──
 async function sendTelegram(text) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
   const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
@@ -28,6 +29,7 @@ async function sendTelegram(text) {
   } catch (e) {}
 }
 
+// ── Twelve Data Fetch ──
 async function fetchTD(symbol, interval, rows = 100) {
   for (const key of API_KEYS) {
     try {
@@ -49,6 +51,7 @@ async function fetchTD(symbol, interval, rows = 100) {
   return null;
 }
 
+// ── RSI Calculation ──
 function rsi(closes, len = 14) {
   const rsis = Array(closes.length).fill(null);
   let gain = 0, loss = 0;
@@ -70,6 +73,7 @@ function rsi(closes, len = 14) {
   return rsis;
 }
 
+// ── Bollinger Band ──
 function bollinger(closes, w = 20, d = 2) {
   const mid = Array(closes.length).fill(null);
   const up = Array(closes.length).fill(null);
@@ -85,6 +89,36 @@ function bollinger(closes, w = 20, d = 2) {
   return { mid, up, lo };
 }
 
+// ── MACD (12,26,9) ──
+function macd(closes, fast = 12, slow = 26, signal = 9) {
+  const ema = (data, length) => {
+    const alpha = 2 / (length + 1);
+    let emaArr = [];
+    let prev = data.slice(0, length).reduce((a, b) => a + b, 0) / length;
+    for (let i = 0; i < data.length; i++) {
+      prev = i < length ? prev : alpha * data[i] + (1 - alpha) * prev;
+      emaArr.push(i < length - 1 ? null : prev);
+    }
+    return emaArr;
+  };
+
+  const emaFast = ema(closes, fast);
+  const emaSlow = ema(closes, slow);
+  const macdLine = emaFast.map((val, i) =>
+    val != null && emaSlow[i] != null ? val - emaSlow[i] : null
+  );
+  const signalLine = ema(macdLine.filter(v => v != null), signal);
+  const fullSignal = Array(macdLine.length).fill(null);
+  let j = 0;
+  for (let i = 0; i < macdLine.length; i++) {
+    if (macdLine[i] != null) {
+      fullSignal[i] = signalLine[j++] ?? null;
+    }
+  }
+  return { macd: macdLine, signal: fullSignal };
+}
+
+// ── Strategy Engine ──
 async function getSignal(sym) {
   const df5 = await fetchTD(sym, "5min");
   const df1h = await fetchTD(sym, "1h");
@@ -96,45 +130,38 @@ async function getSignal(sym) {
   const rsi1h = rsi(closes1h);
   const bb5 = bollinger(closes5);
   const bb1h = bollinger(closes1h);
+  const { macd: macdLine, signal: macdSignal } = macd(closes1h);
 
   const i5 = df5.length - 1;
   const i1h = df1h.length - 1;
   const c5 = df5[i5];
   const c1h = df1h[i1h];
   const r5 = rsi5[i5], r1h = rsi1h[i1h];
+  const macdVal = macdLine[i1h], signalVal = macdSignal[i1h];
   const now = new Date().toISOString();
 
-  // Strong RSI check
   const rsiValid = (r5 < RSI_LO && r1h < RSI_LO) || (r5 > RSI_HI && r1h > RSI_HI);
   if (!rsiValid) return { symbol: sym, time: now, direction: "wait", reason: "weak rsi" };
+  if (macdVal == null || signalVal == null) return { symbol: sym, time: now, direction: "wait", reason: "macd loading" };
 
   const trendBuy =
     c5.close > bb5.mid[i5] && c5.high < bb5.up[i5] &&
-    c1h.close > c1h.open && c1h.high < bb1h.up[i1h] && c1h.low > bb1h.lo[i1h];
+    c1h.close > c1h.open && c1h.high < bb1h.up[i1h] && c1h.low > bb1h.lo[i1h] &&
+    macdVal > signalVal;
 
   const trendSell =
     c5.close < bb5.mid[i5] && c5.low > bb5.lo[i5] &&
-    c1h.close < c1h.open && c1h.high < bb1h.up[i1h] && c1h.low > bb1h.lo[i1h];
+    c1h.close < c1h.open && c1h.high < bb1h.up[i1h] && c1h.low > bb1h.lo[i1h] &&
+    macdVal < signalVal;
 
   let direction = "wait", tp = null, sl = null, strategy = null, entry = null;
 
   if (trendBuy) {
-    direction = "buy";
-    entry = c5.close;
-    tp = bb5.up[i5];
-    sl = c1h.open;
-    strategy = "trend";
-
-    // Already hit TP or SL
+    direction = "buy"; entry = c5.close; tp = bb5.up[i5]; sl = c1h.open; strategy = "trend";
     if (c5.high >= tp || c5.low <= sl)
       return { symbol: sym, time: now, direction: "wait", reason: "already triggered" };
   } else if (trendSell) {
-    direction = "sell";
-    entry = c5.close;
-    tp = bb5.lo[i5];
-    sl = c1h.open;
-    strategy = "trend";
-
+    direction = "sell"; entry = c5.close; tp = bb5.lo[i5]; sl = c1h.open; strategy = "trend";
     if (c5.low <= tp || c5.high >= sl)
       return { symbol: sym, time: now, direction: "wait", reason: "already triggered" };
   }
@@ -142,6 +169,7 @@ async function getSignal(sym) {
   return { symbol: sym, time: c5.time.toISOString(), direction, entry, tp, sl, strategy };
 }
 
+// ── Background Signal Loop ──
 async function loopSignals() {
   while (true) {
     for (const sym of SYMBOLS) {
@@ -149,7 +177,6 @@ async function loopSignals() {
         const sig = await getSignal(sym);
         const prev = lastSignal[sym];
 
-        // Check if signal direction or time changed
         const isSame = prev && prev.direction === sig.direction && prev.time === sig.time;
         if (sig.direction === "wait" || isSame) continue;
 
@@ -161,10 +188,8 @@ async function loopSignals() {
           hour: "2-digit", minute: "2-digit", hour12: true
         });
 
-        let msg = `📢 *${sig.symbol}* Signal`;
         const dirIcon = sig.direction === "buy" ? "🟩" : "🟥";
-
-        msg += ` (${sig.strategy?.toUpperCase() || "UNKNOWN"})\n`;
+        let msg = `📢 *${sig.symbol}* Signal (${sig.strategy?.toUpperCase()})\n`;
         msg += `${dirIcon} Direction: *${sig.direction.toUpperCase()}*`;
         msg += `\n💰 Entry: $${(sig.entry || 0).toFixed(2)}`;
         msg += `\n🎯 TP: $${(sig.tp || 0).toFixed(2)}\n🛑 SL: $${(sig.sl || 0).toFixed(2)}`;
@@ -172,12 +197,13 @@ async function loopSignals() {
 
         await sendTelegram(msg);
       } catch (err) {
-        // Silent fail
+        console.error("Loop error:", err);
       }
     }
-    await sleep(240000); // every 4 mins
+    await sleep(240000); // every 4 minutes
   }
 }
 
+// ── Express API ──
 app.get("/", (_, res) => res.send("✅ BTC Signal bot running"));
 app.listen(PORT, () => loopSignals());
