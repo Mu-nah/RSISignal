@@ -192,7 +192,7 @@ async function loopSignals() {
         console.error("Signal error:", err);
       }
     }
-    await sleep(240000); // 4 minutes
+    await sleep(180000); // 4 minutes
   }
 }
 
