@@ -89,36 +89,7 @@ function bollinger(closes, w = 20, d = 2) {
   return { mid, up, lo };
 }
 
-// ── MACD (12,26,9) ──
-function macd(closes, fast = 12, slow = 26, signal = 9) {
-  const ema = (data, length) => {
-    const alpha = 2 / (length + 1);
-    let emaArr = [];
-    let prev = data.slice(0, length).reduce((a, b) => a + b, 0) / length;
-    for (let i = 0; i < data.length; i++) {
-      prev = i < length ? prev : alpha * data[i] + (1 - alpha) * prev;
-      emaArr.push(i < length - 1 ? null : prev);
-    }
-    return emaArr;
-  };
-
-  const emaFast = ema(closes, fast);
-  const emaSlow = ema(closes, slow);
-  const macdLine = emaFast.map((val, i) =>
-    val != null && emaSlow[i] != null ? val - emaSlow[i] : null
-  );
-  const signalLine = ema(macdLine.filter(v => v != null), signal);
-  const fullSignal = Array(macdLine.length).fill(null);
-  let j = 0;
-  for (let i = 0; i < macdLine.length; i++) {
-    if (macdLine[i] != null) {
-      fullSignal[i] = signalLine[j++] ?? null;
-    }
-  }
-  return { macd: macdLine, signal: fullSignal };
-}
-
-// ── Strategy Engine ──
+// ── Strategy Engine (MACD removed) ──
 async function getSignal(sym) {
   const df5 = await fetchTD(sym, "5min");
   const df1h = await fetchTD(sym, "1h");
@@ -130,29 +101,24 @@ async function getSignal(sym) {
   const rsi1h = rsi(closes1h);
   const bb5 = bollinger(closes5);
   const bb1h = bollinger(closes1h);
-  const { macd: macdLine, signal: macdSignal } = macd(closes1h);
 
   const i5 = df5.length - 1;
   const i1h = df1h.length - 1;
   const c5 = df5[i5];
   const c1h = df1h[i1h];
   const r5 = rsi5[i5], r1h = rsi1h[i1h];
-  const macdVal = macdLine[i1h], signalVal = macdSignal[i1h];
   const now = new Date().toISOString();
 
   const rsiValid = (r5 < RSI_LO && r1h < RSI_LO) || (r5 > RSI_HI && r1h > RSI_HI);
   if (!rsiValid) return { symbol: sym, time: now, direction: "wait", reason: "weak rsi" };
-  if (macdVal == null || signalVal == null) return { symbol: sym, time: now, direction: "wait", reason: "macd loading" };
 
   const trendBuy =
     c5.close > bb5.mid[i5] && c5.high < bb5.up[i5] &&
-    c1h.close > c1h.open && c1h.high < bb1h.up[i1h] && c1h.low > bb1h.lo[i1h] &&
-    macdVal > signalVal;
+    c1h.close > c1h.open && c1h.high < bb1h.up[i1h] && c1h.low > bb1h.lo[i1h];
 
   const trendSell =
     c5.close < bb5.mid[i5] && c5.low > bb5.lo[i5] &&
-    c1h.close < c1h.open && c1h.high < bb1h.up[i1h] && c1h.low > bb1h.lo[i1h] &&
-    macdVal < signalVal;
+    c1h.close < c1h.open && c1h.high < bb1h.up[i1h] && c1h.low > bb1h.lo[i1h];
 
   let direction = "wait", tp = null, sl = null, strategy = null, entry = null;
 
